@@ -2,6 +2,7 @@ import socket
 from datetime import datetime
 import argparse
 import re
+from concurrent.futures import ThreadPoolExecutor
 
 # Vulnerability dictionary with common ports and descriptions
 vulnerabilities = {
@@ -20,16 +21,26 @@ def validate_ip(ip):
     else:
         raise ValueError("Invalid IP address format.")
 
+def scan_port(ip, port):
+    """Check if a port is open on a given IP."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.5)
+            if s.connect_ex((ip, port)) == 0:
+                return port
+    except Exception:
+        pass
+    return None
+
 def scan_ports(ip, port_range=(1, 1024)):
-    """Scan the specified IP for open ports in the given range."""
+    """Scan the specified IP for open ports in the given range using multi-threading."""
     open_ports = []
     print(f"Scanning {ip} for open ports...")
-    for port in range(port_range[0], port_range[1] + 1):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(0.5)  # Faster scanning with short timeout
-            if s.connect_ex((ip, port)) == 0:  # If port is open
-                print(f"Port {port} is open")
-                open_ports.append(port)
+
+    with ThreadPoolExecutor(max_workers=50) as executor:
+        results = executor.map(lambda p: scan_port(ip, p), range(port_range[0], port_range[1] + 1))
+        open_ports = [port for port in results if port]
+
     return open_ports
 
 def check_vulnerabilities(open_ports):
@@ -56,19 +67,38 @@ def log_results(ip, open_ports, vulnerabilities_found):
 
     print(f"Results logged to {log_filename}")
 
+def process_ip(ip, start_port, end_port):
+    """Scan a single IP and log results."""
+    try:
+        if validate_ip(ip):
+            open_ports = scan_ports(ip, (start_port, end_port))
+            vulnerabilities_found = check_vulnerabilities(open_ports)
+            log_results(ip, open_ports, vulnerabilities_found)
+    except ValueError as e:
+        print(f"Error scanning {ip}: {e}")
+
 def main():
     # Parse command-line arguments
-    parser = argparse.ArgumentParser(description="Network Security Scanner")
-    parser.add_argument("ip", type=str, help="IP address to scan")
+    parser = argparse.ArgumentParser(description="Network Security Scanner with Multi-Threading")
+    parser.add_argument("ip", type=str, nargs="?", help="IP address to scan")
+    parser.add_argument("--ip-file", type=str, help="File containing list of IPs to scan")
     parser.add_argument("--start-port", type=int, default=1, help="Start of port range")
     parser.add_argument("--end-port", type=int, default=1024, help="End of port range")
     args = parser.parse_args()
 
-    # Validate IP and scan
-    if validate_ip(args.ip):
-        open_ports = scan_ports(args.ip, (args.start_port, args.end_port))
-        vulnerabilities_found = check_vulnerabilities(open_ports)
-        log_results(args.ip, open_ports, vulnerabilities_found)
+    # Process single IP or a file of IPs
+    if args.ip:
+        process_ip(args.ip, args.start_port, args.end_port)
+    elif args.ip_file:
+        try:
+            with open(args.ip_file, 'r') as file:
+                ips = [line.strip() for line in file if line.strip()]
+                for ip in ips:
+                    process_ip(ip, args.start_port, args.end_port)
+        except FileNotFoundError:
+            print(f"Error: File {args.ip_file} not found.")
+    else:
+        print("Please provide an IP address or a file of IPs to scan.")
 
 if __name__ == "__main__":
     main()
